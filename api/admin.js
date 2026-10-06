@@ -1,0 +1,28 @@
+const {sb}=require('./_db');const {requireUser,adminFetch}=require('./_auth');
+module.exports=async(req,res)=>{
+try{
+const me=await requireUser(req);if(me.error)return res.status(me.status).json({error:me.error});
+const a=String(req.body?.action||req.query?.action||'');
+const adminOnly=['users','role','ban','unban','delete-user'].includes(a);
+if(adminOnly&&me.profile.role!=='admin')return res.status(403).json({error:'Wymagane uprawnienia administratora.'});
+if(!adminOnly&&!['admin','moderator'].includes(me.profile.role))return res.status(403).json({error:'Brak uprawnień.'});
+if(req.method==='GET'&&a==='dashboard'){
+const [users,topics,posts,reports,contacts,blogs]=await Promise.all([
+sb('webstrefa_profiles?select=id,username,first_name,last_name,role,is_banned,last_seen_at,created_at&order=created_at.desc&limit=100'),
+sb('webstrefa_forum_topics?select=id'),sb('webstrefa_forum_posts?select=id'),
+sb('webstrefa_forum_reports?select=id,status,reason,created_at&order=created_at.desc&limit=100'),
+sb('webstrefa_contacts_v2?select=id,name,email,type,status,created_at&order=created_at.desc&limit=100'),
+sb('webstrefa_blog_posts?select=id,title,status,published_at,created_at&order=created_at.desc&limit=100')
+]);
+return res.json({stats:{users:users.length,topics:topics.length,posts:posts.length,openReports:reports.filter(x=>x.status==='open').length,contacts:contacts.filter(x=>x.status==='new').length,articles:blogs.length},users,reports,contacts,blogs});
+}
+if(req.method==='POST'&&a==='role'){const id=String(req.body.userId),role=['user','moderator','admin'].includes(req.body.role)?req.body.role:null;if(!role)return res.status(400).json({error:'Nieprawidłowa ranga.'});await sb('webstrefa_profiles?id='+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({role,updated_at:new Date().toISOString()})});return res.json({ok:true})}
+if(req.method==='POST'&&a==='ban'){const id=String(req.body.userId);await sb('webstrefa_profiles?id='+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({is_banned:true,ban_reason:String(req.body.reason||'Naruszenie zasad').slice(0,500),updated_at:new Date().toISOString()})});return res.json({ok:true})}
+if(req.method==='POST'&&a==='unban'){const id=String(req.body.userId);await sb('webstrefa_profiles?id='+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({is_banned:false,ban_reason:null,updated_at:new Date().toISOString()})});return res.json({ok:true})}
+if(req.method==='POST'&&a==='delete-user'){const id=String(req.body.userId);if(id===me.user.id)return res.status(400).json({error:'Nie możesz usunąć własnego konta.'});await adminFetch('users/'+id,{method:'DELETE'});return res.json({ok:true})}
+if(req.method==='POST'&&a==='moderate-post'){const id=String(req.body.postId);await sb('webstrefa_forum_posts?id='+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({is_hidden:Boolean(req.body.hidden)})});return res.json({ok:true})}
+if(req.method==='POST'&&a==='moderate-topic'){const id=String(req.body.topicId);await sb('webstrefa_forum_topics?id='+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({is_locked:Boolean(req.body.lock),is_hidden:Boolean(req.body.hide),is_pinned:Boolean(req.body.pin),updated_at:new Date().toISOString()})});return res.json({ok:true})}
+if(req.method==='POST'&&a==='report'){const id=String(req.body.reportId);const status=['open','reviewing','resolved','rejected'].includes(req.body.status)?req.body.status:'reviewing';await sb('webstrefa_forum_reports?id='+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status,handled_by:me.user.id,handled_at:new Date().toISOString()})});return res.json({ok:true})}
+if(req.method==='POST'&&a==='contact'){const id=String(req.body.contactId);const status=['new','in_progress','answered','archived'].includes(req.body.status)?req.body.status:'in_progress';await sb('webstrefa_contacts_v2?id='+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status})});return res.json({ok:true})}
+return res.status(400).json({error:'Nieznana operacja panelu.'});
+}catch(e){console.error(e);return res.status(500).json({error:e.message||'Błąd panelu administracyjnego.'})}};
